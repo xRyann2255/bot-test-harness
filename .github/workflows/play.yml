@@ -9,6 +9,11 @@ on:
         description: batch id (16 hex characters)
         required: true
         type: string
+      bundle:
+        description: the run's bundle id (16 hex characters), or empty
+        required: false
+        type: string
+        default: ""
 
 permissions: {}
 
@@ -22,14 +27,18 @@ jobs:
       name: b${{ inputs.id }}
       deployment: false
     steps:
-      # The batch is ciphertext. Its key is a one-off secret, deleted once the result is collected.
+      # The batch is ciphertext. Its key is a one-off secret, deleted once the result is collected. The run's bundle (the
+      # parts every batch of a run shares) is ciphertext too, under a run key that reaches the job only inside its batch.
       - name: Fetch
         env:
           ID: ${{ inputs.id }}
+          BUNDLE: ${{ inputs.bundle }}
           REPO: ${{ github.repository }}
         run: |
           [[ "$ID" =~ ^[0-9a-f]{16}$ ]] || { echo "bad id"; exit 1; }
+          [[ -z "$BUNDLE" || "$BUNDLE" =~ ^[0-9a-f]{16}$ ]] || { echo "bad bundle"; exit 1; }
           curl -fsSL --retry 5 -o "$RUNNER_TEMP/in.gpg" "https://github.com/$REPO/releases/download/batches/$ID.gpg"
+          [ -z "$BUNDLE" ] || curl -fsSL --retry 5 -o "$RUNNER_TEMP/bundle.gpg" "https://github.com/$REPO/releases/download/batches/bundle-$BUNDLE.gpg"
           echo "fetched"
 
       # The key is read only inside new network, mount and PID namespaces: loopback only, host sockets (/run) and swap out of reach,
@@ -49,6 +58,10 @@ jobs:
             export HOME=/root GNUPGHOME=/root/.gnupg
             mkdir -m 700 /root/.gnupg; mkdir /var/tmp/job
             printf %s "$k" | gpg --batch --quiet --no-symkey-cache --pinentry-mode loopback --passphrase-fd 0 --decrypt "$RUNNER_TEMP/in.gpg" | tar -x -C /var/tmp/job
+            if [ -e "$RUNNER_TEMP/bundle.gpg" ]; then
+              gpg --batch --quiet --no-symkey-cache --pinentry-mode loopback --passphrase-fd 0 --decrypt -o /var/tmp/job/bundle.tar "$RUNNER_TEMP/bundle.gpg" < /var/tmp/job/runkey
+            fi
+            rm -f /var/tmp/job/runkey
             chown -R 65534:65534 /var/tmp/job
             cd /var/tmp/job
             setpriv --reuid=65534 --regid=65534 --clear-groups --inh-caps=-all --bounding-set=-all --no-new-privs \
