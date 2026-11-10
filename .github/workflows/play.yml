@@ -1,0 +1,65 @@
+name: play
+run-name: play ${{ inputs.id }}
+
+# Manual dispatch only: it never runs for a pull request or a push.
+on:
+  workflow_dispatch:
+    inputs:
+      id:
+        description: batch id (16 hex characters)
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  play:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    # One environment a batch, holding that batch's key alone: a job is sent only its own secret, and deleting the
+    # environment deletes the key. No deployment record is made.
+    environment:
+      name: b${{ inputs.id }}
+      deployment: false
+    steps:
+      # The batch is ciphertext. Its key is a one-off secret, deleted once the result is collected.
+      - name: Fetch
+        env:
+          ID: ${{ inputs.id }}
+          REPO: ${{ github.repository }}
+        run: |
+          [[ "$ID" =~ ^[0-9a-f]{16}$ ]] || { echo "bad id"; exit 1; }
+          curl -fsSL --retry 5 -o "$RUNNER_TEMP/in.gpg" "https://github.com/$REPO/releases/download/batches/$ID.gpg"
+          echo "fetched"
+
+      # The key is read only inside new network, mount and PID namespaces: loopback only, host sockets (/run) and swap out of reach,
+      # every plaintext byte in a private tmpfs that ends with the step, the games played as nobody with no privileges. Only the
+      # encrypted result leaves. The log shows fixed lines only.
+      - name: Play
+        env:
+          KEY: ${{ secrets.KEY }}
+        run: |
+          sudo --preserve-env=KEY,RUNNER_TEMP unshare --net --mount --pid --ipc --uts --fork --mount-proc --propagation private bash -c '
+            set -euo pipefail
+            k=$KEY; unset KEY
+            [ "$(ip -o link | cut -d" " -f2)" = "lo:" ]
+            swapoff -a; echo core > /proc/sys/kernel/core_pattern; ulimit -c 0
+            for d in /tmp /var/tmp /dev/shm /run; do mount -t tmpfs -o mode=1777 tmpfs "$d"; done
+            mount -t tmpfs -o mode=700 tmpfs /root
+            export HOME=/root GNUPGHOME=/root/.gnupg
+            mkdir -m 700 /root/.gnupg; mkdir /var/tmp/job
+            printf %s "$k" | gpg --batch --quiet --no-symkey-cache --pinentry-mode loopback --passphrase-fd 0 --decrypt "$RUNNER_TEMP/in.gpg" | tar -x -C /var/tmp/job
+            chown -R 65534:65534 /var/tmp/job
+            cd /var/tmp/job
+            setpriv --reuid=65534 --regid=65534 --clear-groups --inh-caps=-all --bounding-set=-all --no-new-privs \
+              env -i PATH=/usr/bin:/bin HOME=/var/tmp python3 -I run.py > /var/tmp/out.tar 2> /dev/null || true
+            printf %s "$k" | gpg --batch --quiet --no-symkey-cache --pinentry-mode loopback --passphrase-fd 0 --symmetric --cipher-algo AES256 -o "$RUNNER_TEMP/out.gpg" /var/tmp/out.tar
+          ' > /dev/null 2>&1 && echo "played" || { echo "failed"; exit 1; }
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: out
+          path: ${{ runner.temp }}/out.gpg
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
