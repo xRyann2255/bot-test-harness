@@ -11,4 +11,5 @@ Runs test games for a game-playing bot on GitHub Actions, one batch per manually
   leaves and kept as a 1-day artifact. The log shows fixed lines.
 - The workflow runs only on manual dispatch, has no token permissions and uses one GitHub action, pinned by hash.
 
-Public metadata: when runs happen, how long they take, and the sizes of the encrypted files.
+Public metadata: when runs happen, how long they take, the sizes of the encrypted files, and which batches share one
+run's asset (its random id is a workflow input).
