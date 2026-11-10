@@ -15,7 +15,7 @@ permissions: {}
 jobs:
   play:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     # One environment a batch, holding that batch's key alone: a job is sent only its own secret, and deleting the
     # environment deletes the key. No deployment record is made.
     environment:
